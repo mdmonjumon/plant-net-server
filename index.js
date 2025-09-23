@@ -110,6 +110,15 @@ async function run() {
     })
 
 
+    // get all user data
+    app.get('/all-users/:email', verifyToken, async (req, res) => {
+      const email = req.params.email;
+      const query = { email: { $ne: email } };
+      const result = await userCollection.find(query).toArray();
+      res.send(result)
+    })
+
+
     // manage user status
     app.patch('/users/:email', verifyToken, async (req, res) => {
       const email = req.params.email;
