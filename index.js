@@ -36,6 +36,27 @@ const verifyToken = async (req, res, next) => {
   })
 }
 
+// verifyAdmin
+const verifyAdmin = async (req, res, next) => {
+  const email = req?.user?.email;
+  const query = { email }
+  const result = await userCollection.findOne(query);
+  if (!result || result?.role !== "Admin") {
+    return res.status(403).send({ message: "Forbidden access! Only Admin can action" })
+  }
+  next();
+}
+// verifySeller
+const verifySeller = async (req, res, next) => {
+  const email = req?.user?.email;
+  const query = { email }
+  const result = await userCollection.findOne(query);
+  if (!result || result?.role !== "Seller") {
+    return res.status(403).send({ message: "Forbidden access! Only Admin can action" })
+  }
+  next();
+}
+
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.xt5rphe.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 
@@ -47,14 +68,15 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 })
+
+// create db collection
+const db = client.db('plantNet-session');
+const userCollection = db.collection("users");
+const plantsCollection = db.collection("plants")
+const ordersCollection = db.collection("orders")
+
 async function run() {
   try {
-    // create db collection
-    const db = client.db('plantNet-session');
-    const userCollection = db.collection("users");
-    const plantsCollection = db.collection("plants")
-    const ordersCollection = db.collection("orders")
-
     // Generate jwt token
     app.post('/jwt', async (req, res) => {
       const email = req.body
@@ -111,7 +133,7 @@ async function run() {
 
 
     // get all user data
-    app.get('/all-users/:email', verifyToken, async (req, res) => {
+    app.get('/all-users/:email', verifyToken, verifyAdmin, async (req, res) => {
       const email = req.params.email;
       const query = { email: { $ne: email } };
       const result = await userCollection.find(query).toArray();
@@ -135,13 +157,44 @@ async function run() {
       res.send(result);
     })
 
+    // update user role
+    app.patch('/user/role/:email', verifyToken, verifyAdmin, async (req, res) => {
+      const email = req.params.email;
+      const { role } = req.body;
+      const filter = { email }
+      const updateDoc = {
+        $set: {
+          role, status: "verified"
+        }
+      }
+      const result = await userCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    })
 
 
 
     // save a plant in db
-    app.post('/plants', verifyToken, async (req, res) => {
+    app.post('/plants', verifyToken, verifySeller, async (req, res) => {
       const plantInfo = req.body;
       const result = await plantsCollection.insertOne(plantInfo);
+      res.send(result)
+    })
+
+
+    // delete plant from db by seller
+    app.get('/seller/plants', verifyToken, verifySeller, async (req, res) => {
+      const email = req.user.email;
+      const query = { 'seller.email': email };
+      const result = await plantsCollection.find(query).toArray();
+      res.send(result);
+    })
+
+
+    // delete plant from db by seller
+    app.delete('/delete/plant/seller/:id', verifyToken, verifySeller, async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await plantsCollection.deleteOne(query);
       res.send(result)
     })
 
