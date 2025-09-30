@@ -2,6 +2,7 @@ require('dotenv').config()
 const express = require('express')
 const cors = require('cors')
 const cookieParser = require('cookie-parser')
+const nodemailer = require("nodemailer");
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb')
 const jwt = require('jsonwebtoken')
 const morgan = require('morgan')
@@ -19,6 +20,39 @@ app.use(cors(corsOptions))
 app.use(express.json())
 app.use(cookieParser())
 app.use(morgan('dev'))
+
+
+
+const sendEmail = (emailAddress, emailData) => {
+  // create transporter
+  const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false, // upgrade later with STARTTLS
+    auth: {
+      user: process.env.NODEMAILER_USER,
+      pass: process.env.NODEMAILER_PASS,
+    },
+  });
+
+  const mailBody = {
+    from: process.env.NODEMAILER_USER,
+    to: emailAddress,
+    subject: emailData?.subject,
+    text: emailData?.message, // plain‑text body
+    html: `<p>${emailData?.message}</p>`, // HTML body
+  }
+  transporter.sendMail(mailBody, (error, info) => {
+    if (error) {
+      console.log(error)
+    }
+    else {
+      console.log(info);
+    }
+  })
+}
+
+
 
 const verifyToken = async (req, res, next) => {
   const token = req.cookies?.token
@@ -218,6 +252,19 @@ async function run() {
     app.post('/order', verifyToken, async (req, res) => {
       const orderInfo = req.body;
       const result = await ordersCollection.insertOne(orderInfo);
+      if (result?.insertedId) {
+        // send email to customer
+        sendEmail(orderInfo?.customer?.email, { 
+          subject: "Order Placed",
+          message: `You have placed an order successfully. Order Id is: ${result?.insertedId}` 
+        })
+
+        // send email to seller
+        sendEmail(orderInfo?.sellerEmail, { 
+          subject: "Order Placed",
+          message: `Great news! You got an order from ${orderInfo?.customer?.name}` 
+        })
+      }
       res.send(result);
     })
 
@@ -240,7 +287,7 @@ async function run() {
     })
 
 
-    // get all orders for a single user
+    // get all orders for specific user
     app.get('/orders', verifyToken, async (req, res) => {
       const email = req.query.email;
       console.log("email", email)
@@ -278,6 +325,58 @@ async function run() {
           }
         }
       ]).toArray()
+      res.send(result)
+    })
+
+
+
+    // get all orders for specific seller
+    app.get('/orders/seller', verifyToken, verifySeller, async (req, res) => {
+      const email = req.user.email;
+      const query = { sellerEmail: email }
+      const result = await ordersCollection.aggregate([
+        {
+          $match: query
+        },
+        {
+          $addFields: {
+            plantId: { $toObjectId: '$plantId' }
+          }
+        },
+        {
+          $lookup: {
+            from: "plants",
+            localField: "plantId",
+            foreignField: "_id",
+            as: "plants"
+          },
+        },
+        {
+          $unwind: "$plants"
+        },
+        {
+          $addFields: {
+            name: "$plants.name"
+          }
+        }, {
+          $project: {
+            plants: 0,
+          }
+        }
+      ]).toArray()
+      res.send(result)
+    })
+
+
+    // update orders status
+    app.patch('/order/status/:id', verifyToken, verifySeller, async (req, res) => {
+      const id = req.params.id;
+      const { status } = req.body;
+      const filter = { _id: new ObjectId(id) }
+      const updateDoc = {
+        $set: { status }
+      }
+      const result = await ordersCollection.updateMany(filter, updateDoc)
       res.send(result)
     })
 
