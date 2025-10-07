@@ -6,6 +6,7 @@ const nodemailer = require("nodemailer");
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb')
 const jwt = require('jsonwebtoken')
 const morgan = require('morgan')
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 const port = process.env.PORT || 9000
 const app = express()
@@ -50,6 +51,13 @@ const sendEmail = (emailAddress, emailData) => {
       console.log(info);
     }
   })
+}
+
+
+// convert to cent
+const convertToCent = (amount) => {
+  const totalAmount = amount * 100;
+  return totalAmount
 }
 
 
@@ -251,18 +259,24 @@ async function run() {
     // save order info in db
     app.post('/order', verifyToken, async (req, res) => {
       const orderInfo = req.body;
-      const result = await ordersCollection.insertOne(orderInfo);
+      const plant = await plantsCollection.findOne({ _id: new ObjectId(orderInfo?.plantId) })
+      if (!plant) {
+        res.status(400).send({ message: "Plant Not Found" })
+        return
+      }
+      const totalPrice = orderInfo?.quantity * plant?.price;
+      const result = await ordersCollection.insertOne({ ...orderInfo, price: totalPrice });
       if (result?.insertedId) {
         // send email to customer
-        sendEmail(orderInfo?.customer?.email, { 
+        sendEmail(orderInfo?.customer?.email, {
           subject: "Order Placed",
-          message: `You have placed an order successfully. Order Id is: ${result?.insertedId}` 
+          message: `You have placed an order successfully. Order Id is: ${result?.insertedId}`
         })
 
         // send email to seller
-        sendEmail(orderInfo?.sellerEmail, { 
+        sendEmail(orderInfo?.sellerEmail, {
           subject: "Order Placed",
-          message: `Great news! You got an order from ${orderInfo?.customer?.name}` 
+          message: `Great news! You got an order from ${orderInfo?.customer?.name}`
         })
       }
       res.send(result);
@@ -290,8 +304,6 @@ async function run() {
     // get all orders for specific user
     app.get('/orders', verifyToken, async (req, res) => {
       const email = req.query.email;
-      console.log("email", email)
-
       const query = { "customer.email": email }
       const result = await ordersCollection.aggregate([
         {
@@ -391,6 +403,81 @@ async function run() {
       }
       const result = await ordersCollection.deleteOne(query);
       res.send(result);
+    })
+
+
+    // admin stat
+    app.get('/admin-stat', verifyToken, verifyAdmin, async (req, res) => {
+      const totalUsers = await userCollection.estimatedDocumentCount();
+      const totalPlants = await plantsCollection.estimatedDocumentCount();
+      const orderDetails = await ordersCollection.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalRevenue: { $sum: "$price" },
+            totalOrders: { $sum: 1 }
+          }
+        },
+        {
+          $project: {
+            _id: 0
+          }
+        }
+      ]).next()
+
+      const chartData = await ordersCollection.aggregate([
+        {
+          $addFields: {
+            createDate: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: { $toDate: "$_id" }
+              }
+            }
+          }
+        },
+        {
+          $group: {
+            _id: "$createDate",
+            orders: { $sum: 1 },
+            revenue: { $sum: "$price" },
+            totalQuantity: { $sum: "$quantity" }
+
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            date: "$_id",
+            totalOrders: "$orders",
+            totalRevenue: "$revenue",
+            totalQuantity: "$totalQuantity"
+          }
+        },
+        { $sort: { date: -1 } }
+      ]).toArray()
+
+      res.send({ totalUsers, totalPlants, ...orderDetails, chartData });
+    })
+
+
+    //payment-intent
+    app.post('/create-payment-intent', verifyToken, async (req, res) => {
+      const info = req.body;
+      const plant = await plantsCollection.findOne({ _id: new ObjectId(info?.id) })
+      if (!plant) {
+        return;
+      }
+      const totalPrice = info?.totalQuantity * plant?.price;
+      // create payment intent
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: convertToCent(totalPrice),
+        currency: 'usd',
+        automatic_payment_methods: {
+          enabled: true,
+        },
+      });
+      res.send({ clientSecret: paymentIntent?.client_secret })
     })
 
     // Send a ping to confirm a successful connection
